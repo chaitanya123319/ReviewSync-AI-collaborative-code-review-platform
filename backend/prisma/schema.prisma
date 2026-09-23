@@ -1,0 +1,102 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String               @id @default(uuid())
+  name           String
+  email          String               @unique
+  password       String               @default("")
+  githubId       String?              @unique
+  avatarUrl      String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  refreshTokens  RefreshToken[]
+  participations SessionParticipant[]
+  comments       LineComment[]
+  resolvedComments LineComment[]      @relation("ResolvedBy")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+}
+
+model ReviewSession {
+  id           String               @id @default(uuid())
+  name         String
+  projectName  String
+  status       String               @default("active")
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  participants SessionParticipant[]
+  files        ReviewFile[]
+}
+
+model SessionParticipant {
+  id        String        @id @default(uuid())
+  role      String        @default("member")
+  joinedAt  DateTime      @default(now())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId String
+  session   ReviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sessionId])
+}
+
+model ReviewFile {
+  id        String        @id @default(uuid())
+  filename  String
+  language  String        @default("plaintext")
+  content   String
+  createdAt DateTime      @default(now())
+  sessionId String
+  session   ReviewSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  comments  LineComment[]
+  aiIssues  AiIssue[]
+}
+
+model AiIssue {
+  id            String     @id @default(uuid())
+  line          Int
+  type          String
+  severity      String
+  title         String
+  explanation   String
+  suggestedFix  String
+  status        String     @default("pending")
+  createdAt     DateTime   @default(now())
+  fileId        String
+  file          ReviewFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
+
+model LineComment {
+  id              String        @id @default(uuid())
+  line            Int
+  body            String
+  resolved        Boolean       @default(false)
+  resolvedAt      DateTime?
+  resolvedById    String?
+  resolvedBy      User?         @relation("ResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+  parentCommentId String?
+  parent          LineComment?  @relation("CommentThread", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies         LineComment[] @relation("CommentThread")
+  createdAt       DateTime      @default(now())
+  fileId          String
+  file            ReviewFile    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  authorId        String
+  author          User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+}
