@@ -168,7 +168,7 @@ router.post('/:id/join', async (req: Request, res: Response) => {
 router.post('/:id/files', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { filename, language, content } = req.body;
+    const { filename, language, content, path } = req.body;
 
     if (!filename || !content) {
       res.status(400).json({ error: 'Filename and content are required' });
@@ -184,6 +184,7 @@ router.post('/:id/files', async (req: Request, res: Response) => {
     const file = await prisma.reviewFile.create({
       data: {
         filename,
+        path: path || '',
         language: language || 'plaintext',
         content,
         sessionId: id,
@@ -204,8 +205,8 @@ router.get('/:id/files', async (req: Request, res: Response) => {
 
     const files = await prisma.reviewFile.findMany({
       where: { sessionId: id },
-      select: { id: true, filename: true, language: true, createdAt: true },
-      orderBy: { createdAt: 'asc' },
+      select: { id: true, filename: true, path: true, language: true, createdAt: true },
+      orderBy: [{ path: 'asc' }, { filename: 'asc' }],
     });
 
     res.json({ files });
@@ -215,28 +216,81 @@ router.get('/:id/files', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/v1/sessions/:id/files/seed — Seed a sample JS file for testing
+// POST /api/v1/sessions/:id/files/seed — Seed sample files with folder structure
 router.post('/:id/files/seed', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const sampleContent = `// utils.js — Utility functions for ReviewSync
-import { formatDistanceToNow } from 'date-fns';
+    const sampleFiles = [
+      {
+        filename: 'index.js',
+        path: 'src',
+        language: 'javascript',
+        content: `import express from 'express';
+import { userRouter } from './routes/users.js';
+import { dbConnect } from './utils/db.js';
 
-/**
- * Format a date string into a human-readable relative time.
- * @param {string} dateStr - ISO date string
- * @returns {string} e.g. "3 minutes ago"
- */
-export function timeAgo(dateStr) {
-  return formatDistanceToNow(new Date(dateStr), { addSuffix: true });
+const app = express();
+app.use(express.json());
+app.use('/api/users', userRouter);
+
+dbConnect().then(() => {
+  app.listen(3000, () => console.log('Server on :3000'));
+});
+`,
+      },
+      {
+        filename: 'users.js',
+        path: 'src/routes',
+        language: 'javascript',
+        content: `import { Router } from 'express';
+
+const router = Router();
+
+// GET /api/users — list all users
+router.get('/', async (req, res) => {
+  const query = "SELECT * FROM users WHERE role = '" + req.query.role + "'";
+  const users = await db.query(query);
+  res.json(users);
+});
+
+// POST /api/users — create a user
+router.post('/', async (req, res) => {
+  const { name, email } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  const user = await db.insert('users', { name, email });
+  res.status(201).json(user);
+});
+
+export { router as userRouter };
+`,
+      },
+      {
+        filename: 'db.js',
+        path: 'src/utils',
+        language: 'javascript',
+        content: `let connection = null;
+
+export async function dbConnect() {
+  if (connection) return connection;
+  connection = await createConnection(process.env.DATABASE_URL);
+  return connection;
 }
 
-/**
- * Debounce a function call.
- * @param {Function} fn - The function to debounce
- * @param {number} delay - Delay in milliseconds
- */
+export function formatDate(date) {
+  return new Date(date).toISOString().split('T')[0];
+}
+
+export function deepClone(obj) {
+  return structuredClone(obj);
+}
+`,
+      },
+      {
+        filename: 'helpers.js',
+        path: 'src/utils',
+        language: 'javascript',
+        content: `// Debounce utility
 export function debounce(fn, delay = 300) {
   let timer;
   return (...args) => {
@@ -245,45 +299,63 @@ export function debounce(fn, delay = 300) {
   };
 }
 
-/**
- * Deep clone an object using structured clone.
- */
-export function deepClone(obj) {
-  return structuredClone(obj);
-}
-
-// Calculate the average of an array of numbers
+// Average of numbers
 export function average(numbers) {
   if (numbers.length === 0) return 0;
   const sum = numbers.reduce((acc, n) => acc + n, 0);
   return sum / numbers.length;
 }
 
-// Capitalize the first letter of a string
+// Capitalize first letter
 export function capitalize(str) {
   if (!str) return '';
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
-
-export default {
-  timeAgo,
-  debounce,
-  deepClone,
-  average,
-  capitalize,
-};
-`;
-
-    const file = await prisma.reviewFile.create({
-      data: {
-        filename: 'utils.js',
-        language: 'javascript',
-        content: sampleContent,
-        sessionId: id,
+`,
       },
-    });
+      {
+        filename: 'README.md',
+        path: '',
+        language: 'markdown',
+        content: `# Sample Project
 
-    res.status(201).json({ file });
+A sample Express.js project for code review.
+
+## Structure
+
+\`\`\`
+src/
+  index.js        - App entry point
+  routes/
+    users.js      - User CRUD endpoints
+  utils/
+    db.js         - Database connection
+    helpers.js    - Utility functions
+\`\`\`
+
+## Known Issues
+
+- SQL injection in users.js (line 7)
+- No input validation on email field
+`,
+      },
+    ];
+
+    const created = await prisma.$transaction(
+      sampleFiles.map((f) =>
+        prisma.reviewFile.create({
+          data: {
+            filename: f.filename,
+            path: f.path,
+            language: f.language,
+            content: f.content,
+            sessionId: id,
+          },
+        }),
+      ),
+    );
+
+    res.status(201).json({ files: created });
   } catch (error) {
     console.error('Seed file error:', error);
     res.status(500).json({ error: 'Internal server error' });

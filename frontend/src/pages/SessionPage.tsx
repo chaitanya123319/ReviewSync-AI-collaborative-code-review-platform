@@ -13,11 +13,13 @@ import CommentsPanel, {
   type CommentReply,
 } from '../components/CommentsPanel';
 import AIIssuesPanel, { type AiIssue } from '../components/AIIssuesPanel';
+import FileTree from '../components/FileTree';
 
 /* ─── Types ─── */
 interface FileInfo {
   id: string;
   filename: string;
+  path: string;
   language: string;
   createdAt: string;
 }
@@ -25,6 +27,7 @@ interface FileInfo {
 interface FileData {
   id: string;
   filename: string;
+  path: string;
   language: string;
   content: string;
   comments: ThreadComment[];
@@ -595,7 +598,7 @@ export default function SessionPage() {
           <h1 className="text-sm font-semibold text-gray-800">Code Review</h1>
           {activeFile && (
             <span className="px-2 py-0.5 text-xs font-mono bg-gray-100 text-gray-600 rounded">
-              {activeFile.filename}
+              {activeFile.path ? `${activeFile.path}/` : ''}{activeFile.filename}
             </span>
           )}
         </div>
@@ -673,17 +676,22 @@ export default function SessionPage() {
                 onClick={seedFile}
                 disabled={isSeeding}
                 className="text-xs text-indigo-600 hover:text-indigo-700 font-medium disabled:opacity-50"
-                title="Add a sample JS file"
+                title="Seed sample project files"
               >
                 {isSeeding ? '...' : '+ Sample'}
               </button>
             </div>
+            {files.length > 0 && (
+              <div className="text-[10px] text-gray-400">
+                {files.length} file{files.length !== 1 ? 's' : ''}
+              </div>
+            )}
           </div>
 
           {isLoadingFiles && (
             <div className="p-3 space-y-2">
-              {[1, 2].map((i) => (
-                <div key={i} className="h-7 bg-gray-200 rounded animate-pulse" />
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="h-6 bg-gray-200 rounded animate-pulse" />
               ))}
             </div>
           )}
@@ -696,24 +704,18 @@ export default function SessionPage() {
                 disabled={isSeeding}
                 className="text-xs px-3 py-1.5 text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:opacity-50"
               >
-                Add Sample File
+                Add Sample Files
               </button>
             </div>
           )}
 
-          {files.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => loadFile(f.id)}
-              className={`w-full text-left px-3 py-2 text-sm font-mono border-b border-gray-100 hover:bg-gray-100 transition-colors ${
-                activeFile?.id === f.id
-                  ? 'bg-indigo-50 text-indigo-700 border-l-2 border-l-indigo-500'
-                  : 'text-gray-700'
-              }`}
-            >
-              {f.filename}
-            </button>
-          ))}
+          {!isLoadingFiles && files.length > 0 && (
+            <FileTree
+              files={files}
+              activeFileId={activeFile?.id ?? null}
+              onFileSelect={(fileId) => loadFile(fileId)}
+            />
+          )}
         </div>
 
         {/* Editor area */}

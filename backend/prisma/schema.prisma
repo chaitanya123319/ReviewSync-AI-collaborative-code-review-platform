@@ -60,6 +60,7 @@ model SessionParticipant {
 model ReviewFile {
   id        String        @id @default(uuid())
   filename  String
+  path      String        @default("")
   language  String        @default("plaintext")
   content   String
   createdAt DateTime      @default(now())
