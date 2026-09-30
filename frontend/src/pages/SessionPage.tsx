@@ -103,6 +103,37 @@ export default function SessionPage() {
   const decorationsRef = useRef<monacoEditor.IEditorDecorationsCollection | null>(null);
   const aiDecorationsRef = useRef<monacoEditor.IEditorDecorationsCollection | null>(null);
   const widgetsRef = useRef<monacoEditor.IContentWidget[]>([]);
+  const cursorDecorationsRef = useRef<monacoEditor.IEditorDecorationsCollection | null>(null);
+  const cursorWidgetsRef = useRef<Map<string, monacoEditor.IContentWidget>>(new Map());
+
+  // Remote cursors: userId -> { name, fileId, line, column }
+  interface RemoteCursor {
+    userId: string;
+    name: string;
+    fileId: string;
+    line: number;
+    column: number;
+  }
+  const [remoteCursors, setRemoteCursors] = useState<Map<string, RemoteCursor>>(new Map());
+
+  // Stable color palette for remote users
+  const CURSOR_COLORS = [
+    { bg: '#ef4444', text: '#ffffff', light: 'rgba(239,68,68,0.12)' },  // red
+    { bg: '#3b82f6', text: '#ffffff', light: 'rgba(59,130,246,0.12)' },  // blue
+    { bg: '#10b981', text: '#ffffff', light: 'rgba(16,185,129,0.12)' },  // green
+    { bg: '#f59e0b', text: '#000000', light: 'rgba(245,158,11,0.12)' },  // amber
+    { bg: '#8b5cf6', text: '#ffffff', light: 'rgba(139,92,246,0.12)' },  // violet
+    { bg: '#ec4899', text: '#ffffff', light: 'rgba(236,72,153,0.12)' },  // pink
+    { bg: '#06b6d4', text: '#ffffff', light: 'rgba(6,182,212,0.12)' },   // cyan
+    { bg: '#f97316', text: '#ffffff', light: 'rgba(249,115,22,0.12)' },  // orange
+  ];
+  const userColorMapRef = useRef<Map<string, number>>(new Map());
+  const getCursorColor = (userId: string) => {
+    if (!userColorMapRef.current.has(userId)) {
+      userColorMapRef.current.set(userId, userColorMapRef.current.size % CURSOR_COLORS.length);
+    }
+    return CURSOR_COLORS[userColorMapRef.current.get(userId)!];
+  };
 
   // Keep a ref to activeFile id for socket handler closures
   const activeFileIdRef = useRef<string | null>(null);
@@ -349,6 +380,205 @@ export default function SessionPage() {
       socket.off('ai_issue_updated', handleIssueUpdated);
     };
   }, []);
+
+  /* ─── Socket.IO: cursor tracking ─── */
+  useEffect(() => {
+    const socket = socketClient.getSocket();
+    if (!socket) return;
+
+    const handleCursorMove = (event: {
+      userId: string;
+      name: string;
+      fileId: string;
+      line: number;
+      column: number;
+    }) => {
+      setRemoteCursors((prev) => {
+        const next = new Map(prev);
+        next.set(event.userId, event);
+        return next;
+      });
+    };
+
+    const handleCursorRemove = (event: { userId: string }) => {
+      setRemoteCursors((prev) => {
+        const next = new Map(prev);
+        next.delete(event.userId);
+        return next;
+      });
+    };
+
+    socket.on('cursor_move', handleCursorMove);
+    socket.on('cursor_remove', handleCursorRemove);
+    return () => {
+      socket.off('cursor_move', handleCursorMove);
+      socket.off('cursor_remove', handleCursorRemove);
+    };
+  }, []);
+
+  /* ─── Emit cursor position on editor cursor change (throttled) ─── */
+  const cursorThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || !activeFile) return;
+
+    const disposable = editor.onDidChangeCursorPosition((e) => {
+      // Throttle: max ~10 events/sec
+      if (cursorThrottleRef.current) return;
+      cursorThrottleRef.current = setTimeout(() => {
+        cursorThrottleRef.current = null;
+      }, 100);
+
+      const socket = socketClient.getSocket();
+      if (!socket || !activeFile) return;
+
+      socket.emit('cursor_move', {
+        fileId: activeFile.id,
+        line: e.position.lineNumber,
+        column: e.position.column,
+      });
+    });
+
+    return () => {
+      disposable.dispose();
+      if (cursorThrottleRef.current) {
+        clearTimeout(cursorThrottleRef.current);
+        cursorThrottleRef.current = null;
+      }
+    };
+  }, [activeFile?.id]);
+
+  /* ─── Render remote cursor decorations + name labels ─── */
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco || !activeFile) return;
+
+    // Filter cursors for the active file only
+    const cursorEntries = Array.from(remoteCursors.values()).filter(
+      (c) => c.fileId === activeFile.id,
+    );
+
+    // Build gutter + line decorations
+    const newDecorations: monacoEditor.IModelDeltaDecoration[] = cursorEntries.map((cursor) => {
+      const color = getCursorColor(cursor.userId);
+      // Inject CSS dynamically for this user's cursor color
+      const className = `remote-cursor-${cursor.userId.replace(/[^a-zA-Z0-9]/g, '')}`;
+      const glyphClassName = `remote-cursor-glyph-${cursor.userId.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+      let style = document.getElementById(`style-${className}`);
+      if (!style) {
+        style = document.createElement('style');
+        style.id = `style-${className}`;
+        document.head.appendChild(style);
+      }
+      style.textContent = `
+        .${className} {
+          background-color: ${color.light} !important;
+          border-left: 2px solid ${color.bg};
+        }
+        .${glyphClassName} {
+          background-color: ${color.bg};
+          border-radius: 2px;
+          width: 6px !important;
+          margin-left: 6px;
+        }
+      `;
+
+      return {
+        range: {
+          startLineNumber: cursor.line,
+          startColumn: 1,
+          endLineNumber: cursor.line,
+          endColumn: 1,
+        },
+        options: {
+          isWholeLine: true,
+          className,
+          glyphMarginClassName: glyphClassName,
+          glyphMarginHoverMessage: { value: `**${cursor.name}** — line ${cursor.line}` },
+          stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+        },
+      };
+    });
+
+    if (cursorDecorationsRef.current) {
+      cursorDecorationsRef.current.set(newDecorations);
+    } else {
+      cursorDecorationsRef.current = editor.createDecorationsCollection(newDecorations);
+    }
+
+    // Manage name label content widgets
+    const existingWidgetIds = new Set(cursorWidgetsRef.current.keys());
+    const neededIds = new Set(cursorEntries.map((c) => c.userId));
+
+    // Remove stale widgets
+    for (const id of existingWidgetIds) {
+      if (!neededIds.has(id)) {
+        const widget = cursorWidgetsRef.current.get(id);
+        if (widget) editor.removeContentWidget(widget);
+        cursorWidgetsRef.current.delete(id);
+      }
+    }
+
+    // Add/update widgets
+    for (const cursor of cursorEntries) {
+      const color = getCursorColor(cursor.userId);
+      const widgetId = `cursor-label-${cursor.userId}`;
+
+      let existing = cursorWidgetsRef.current.get(cursor.userId);
+      if (existing) {
+        editor.removeContentWidget(existing);
+      }
+
+      const domNode = document.createElement('div');
+      domNode.style.cssText = `
+        background: ${color.bg};
+        color: ${color.text};
+        font-size: 10px;
+        font-weight: 600;
+        padding: 1px 5px;
+        border-radius: 0 3px 3px 0;
+        line-height: 14px;
+        white-space: nowrap;
+        pointer-events: none;
+        position: relative;
+        top: -2px;
+        opacity: 0.9;
+        z-index: 100;
+      `;
+      domNode.textContent = cursor.name;
+
+      const widget: monacoEditor.IContentWidget = {
+        getId: () => widgetId,
+        getDomNode: () => domNode,
+        getPosition: () => ({
+          position: { lineNumber: cursor.line, column: cursor.column },
+          preference: [monaco.editor.ContentWidgetPositionPreference.ABOVE],
+        }),
+      };
+
+      editor.addContentWidget(widget);
+      cursorWidgetsRef.current.set(cursor.userId, widget);
+    }
+
+    return () => {
+      // Cleanup only happens on unmount — decorations persist across renders
+    };
+  }, [remoteCursors, activeFile?.id]);
+
+  // Cleanup cursor widgets on file switch or unmount
+  useEffect(() => {
+    return () => {
+      const editor = editorRef.current;
+      if (editor) {
+        for (const widget of cursorWidgetsRef.current.values()) {
+          try { editor.removeContentWidget(widget); } catch {}
+        }
+        cursorWidgetsRef.current.clear();
+      }
+    };
+  }, [activeFile?.id]);
 
   /* ─── Monaco Editor mount ─── */
   const handleEditorMount: OnMount = (editor, monaco) => {

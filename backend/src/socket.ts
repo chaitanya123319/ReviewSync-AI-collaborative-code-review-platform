@@ -91,8 +91,25 @@ export function setupSocket(httpServer: HttpServer) {
         socket.leave(user.sessionId);
         onlineUsers.delete(socket.id);
         broadcastOnlineUsers(user.sessionId);
+        // Broadcast cursor_remove so other clients remove this user's cursor
+        io.to(user.sessionId).emit('cursor_remove', { userId: user.userId });
         console.log(`User ${user.name} left session ${user.sessionId}`);
       }
+    });
+
+    // Cursor tracking: relay cursor position to other users in the room
+    socket.on('cursor_move', (payload: { fileId: string; line: number; column: number }) => {
+      const user = onlineUsers.get(socket.id);
+      if (!user) return;
+
+      // Broadcast to everyone else in the room (not back to sender)
+      socket.to(user.sessionId).emit('cursor_move', {
+        userId: user.userId,
+        name: user.name,
+        fileId: payload.fileId,
+        line: payload.line,
+        column: payload.column,
+      });
     });
 
     socket.on('disconnect', () => {
@@ -100,6 +117,8 @@ export function setupSocket(httpServer: HttpServer) {
       if (user) {
         onlineUsers.delete(socket.id);
         broadcastOnlineUsers(user.sessionId);
+        // Broadcast cursor_remove so other clients clean up
+        io.to(user.sessionId).emit('cursor_remove', { userId: user.userId });
         console.log(`Socket disconnected: ${socket.id}, user ${user.name} removed from session ${user.sessionId}`);
       }
     });
